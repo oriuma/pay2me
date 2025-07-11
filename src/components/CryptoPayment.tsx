@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { WalletModal } from "./WalletModal";
+import { AnimatedNumber } from "./AnimatedNumber";
 import { ExternalLink, Plus, Minus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ethers } from "ethers";
@@ -12,6 +13,20 @@ interface WalletInfo {
   balance: string;
   network: string;
 }
+
+// Base Sepolia network configuration
+const BASE_SEPOLIA_CHAIN_ID = "0x14a34"; // 84532 in hex
+const BASE_SEPOLIA_CONFIG = {
+  chainId: BASE_SEPOLIA_CHAIN_ID,
+  chainName: "Base Sepolia",
+  nativeCurrency: {
+    name: "ETH",
+    symbol: "ETH",
+    decimals: 18
+  },
+  rpcUrls: ["https://sepolia.base.org"],
+  blockExplorerUrls: ["https://sepolia-explorer.base.org"]
+};
 
 // USDC Contract address on Base Sepolia
 const USDC_CONTRACT_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
@@ -32,8 +47,50 @@ export function CryptoPayment() {
   const [isConnected, setIsConnected] = useState(false);
   const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState(5); // Default $5
+  const [paymentAmount, setPaymentAmount] = useState(5.00); // Default $5.00
+  const [wrongNetwork, setWrongNetwork] = useState(false);
   const { toast } = useToast();
+
+  // Check network and switch if needed
+  const checkAndSwitchNetwork = async () => {
+    if (!window.ethereum) return false;
+    
+    try {
+      const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+      
+      if (chainId !== BASE_SEPOLIA_CHAIN_ID) {
+        setWrongNetwork(true);
+        
+        try {
+          // Try to switch to Base Sepolia
+          await window.ethereum.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: BASE_SEPOLIA_CHAIN_ID }],
+          });
+        } catch (switchError: any) {
+          // If network doesn't exist, add it
+          if (switchError.code === 4902) {
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [BASE_SEPOLIA_CONFIG],
+            });
+          } else {
+            throw switchError;
+          }
+        }
+        setWrongNetwork(false);
+      }
+      return true;
+    } catch (error) {
+      console.error('Network switch error:', error);
+      toast({
+        title: "Network Switch Failed",
+        description: "Please manually switch to Base Sepolia network.",
+        variant: "destructive"
+      });
+      return false;
+    }
+  };
 
   const handleWalletSelect = async (walletType: string) => {
     try {
@@ -53,15 +110,30 @@ export function CryptoPayment() {
       });
 
       if (accounts.length > 0) {
-        // Get network info
-        const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+        // Check and switch network
+        const networkOk = await checkAndSwitchNetwork();
+        if (!networkOk) return;
         
-        // Mock wallet info for demo
-        setWalletInfo({
-          address: accounts[0],
-          balance: "$0.05 USDC",
-          network: "Base Sepolia"
-        });
+        // Get USDC balance
+        try {
+          const provider = new ethers.BrowserProvider(window.ethereum);
+          const usdcContract = new ethers.Contract(USDC_CONTRACT_ADDRESS, ERC20_ABI, provider);
+          const balance = await usdcContract.balanceOf(accounts[0]);
+          const balanceFormatted = ethers.formatUnits(balance, USDC_DECIMALS);
+          
+          setWalletInfo({
+            address: accounts[0],
+            balance: `$${parseFloat(balanceFormatted).toFixed(2)} USDC`,
+            network: "Base Sepolia"
+          });
+        } catch (error) {
+          console.error('Error fetching balance:', error);
+          setWalletInfo({
+            address: accounts[0],
+            balance: "Unable to fetch",
+            network: "Base Sepolia"
+          });
+        }
         
         setIsConnected(true);
         
@@ -160,16 +232,16 @@ export function CryptoPayment() {
   };
 
   const increaseAmount = () => {
-    setPaymentAmount(prev => Math.min(prev + 1, 1000)); // Max $1000
+    setPaymentAmount(prev => Math.min(Number((prev + 0.25).toFixed(2)), 1000)); // Increment by $0.25
   };
 
   const decreaseAmount = () => {
-    setPaymentAmount(prev => Math.max(prev - 1, 1)); // Min $1
+    setPaymentAmount(prev => Math.max(Number((prev - 0.25).toFixed(2)), 0.25)); // Min $0.25
   };
 
   const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value) || 1;
-    setPaymentAmount(Math.min(Math.max(value, 1), 1000));
+    const value = parseFloat(e.target.value) || 0.25;
+    setPaymentAmount(Math.min(Math.max(Number(value.toFixed(2)), 0.25), 1000));
   };
 
   const formatAddress = (address: string) => {
@@ -235,23 +307,19 @@ export function CryptoPayment() {
                   variant="outline"
                   size="sm"
                   onClick={decreaseAmount}
-                  disabled={paymentAmount <= 1}
-                  className="h-8 w-8 p-0 rounded-full"
+                  disabled={paymentAmount <= 0.25}
+                  className="h-8 w-8 p-0 rounded-full transition-all duration-200 hover:scale-105"
                 >
                   <Minus size={12} />
                 </Button>
                 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 bg-muted/30 rounded-lg px-4 py-2">
                   <span className="text-lg font-bold">$</span>
-                  <Input
-                    type="number"
-                    value={paymentAmount}
-                    onChange={handleAmountChange}
-                    min="1"
-                    max="1000"
-                    className="w-20 text-center text-lg font-bold"
+                  <AnimatedNumber 
+                    value={paymentAmount} 
+                    className="text-2xl font-bold text-primary min-w-[4rem] text-center"
                   />
-                  <span className="text-sm text-muted-foreground">USDC</span>
+                  <span className="text-sm text-muted-foreground font-medium">USDC</span>
                 </div>
                 
                 <Button
@@ -259,24 +327,53 @@ export function CryptoPayment() {
                   size="sm"
                   onClick={increaseAmount}
                   disabled={paymentAmount >= 1000}
-                  className="h-8 w-8 p-0 rounded-full"
+                  className="h-8 w-8 p-0 rounded-full transition-all duration-200 hover:scale-105"
                 >
                   <Plus size={12} />
                 </Button>
               </div>
               
-              <div className="flex justify-center gap-2 mt-3">
-                {[1, 5, 10, 25].map((amount) => (
-                  <Button
-                    key={amount}
-                    variant={paymentAmount === amount ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setPaymentAmount(amount)}
-                    className="text-xs px-3 h-7"
-                  >
-                    ${amount}
-                  </Button>
-                ))}
+              <div className="space-y-3 mt-4">
+                <div className="flex justify-center gap-2">
+                  {[0.25, 1, 2.50, 5].map((amount) => (
+                    <Button
+                      key={amount}
+                      variant={paymentAmount === amount ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPaymentAmount(amount)}
+                      className="text-xs px-3 h-7 transition-all duration-200 hover:scale-105"
+                    >
+                      ${amount.toFixed(2)}
+                    </Button>
+                  ))}
+                </div>
+                
+                <div className="flex justify-center gap-2">
+                  {[10, 25, 50, 100].map((amount) => (
+                    <Button
+                      key={amount}
+                      variant={paymentAmount === amount ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPaymentAmount(amount)}
+                      className="text-xs px-3 h-7 transition-all duration-200 hover:scale-105"
+                    >
+                      ${amount}
+                    </Button>
+                  ))}
+                </div>
+                
+                <div className="mt-3">
+                  <Input
+                    type="number"
+                    value={paymentAmount}
+                    onChange={handleAmountChange}
+                    min="0.25"
+                    max="1000"
+                    step="0.01"
+                    placeholder="Custom amount"
+                    className="w-full text-center text-sm"
+                  />
+                </div>
               </div>
             </div>
           </div>
