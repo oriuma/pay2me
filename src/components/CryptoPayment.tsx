@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { WalletModal } from "./WalletModal";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Plus, Minus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { ethers } from "ethers";
 
 interface WalletInfo {
   address: string;
@@ -11,11 +13,26 @@ interface WalletInfo {
   network: string;
 }
 
+// USDC Contract address on Base Sepolia
+const USDC_CONTRACT_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const RECIPIENT_ADDRESS = "0x75bB73a75EeCc43ffeAa3B48733292437C405f25";
+
+// USDC has 6 decimals
+const USDC_DECIMALS = 6;
+
+// ERC-20 ABI for transfer function
+const ERC20_ABI = [
+  "function transfer(address to, uint256 amount) public returns (bool)",
+  "function balanceOf(address account) public view returns (uint256)",
+  "function decimals() public view returns (uint8)"
+];
+
 export function CryptoPayment() {
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState(5); // Default $5
   const { toast } = useToast();
 
   const handleWalletSelect = async (walletType: string) => {
@@ -64,28 +81,95 @@ export function CryptoPayment() {
   };
 
   const handlePayment = async () => {
+    if (!walletInfo || !window.ethereum) {
+      toast({
+        title: "Wallet not connected",
+        description: "Please connect your wallet first.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     setIsProcessing(true);
     
     try {
-      // Simulate payment processing
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Create provider and signer
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      
+      // Convert payment amount to USDC format (6 decimals)
+      const amountInWei = ethers.parseUnits(paymentAmount.toString(), USDC_DECIMALS);
+      
+      // Create contract instance
+      const usdcContract = new ethers.Contract(USDC_CONTRACT_ADDRESS, ERC20_ABI, signer);
+      
+      // Check if user has enough USDC balance
+      const balance = await usdcContract.balanceOf(walletInfo.address);
+      
+      if (balance < amountInWei) {
+        toast({
+          title: "Insufficient balance",
+          description: `You need at least $${paymentAmount} USDC to make this payment.`,
+          variant: "destructive"
+        });
+        setIsProcessing(false);
+        return;
+      }
+      
+      // Execute the transfer
+      const tx = await usdcContract.transfer(RECIPIENT_ADDRESS, amountInWei);
       
       toast({
-        title: "Payment Successful",
-        description: "Your payment has been processed successfully!",
+        title: "Transaction submitted",
+        description: "Your payment is being processed...",
       });
       
-      // Here you would integrate with actual payment processing
+      // Wait for transaction confirmation
+      const receipt = await tx.wait();
       
-    } catch (error) {
+      if (receipt.status === 1) {
+        toast({
+          title: "Payment Successful",
+          description: `Successfully sent $${paymentAmount} USDC! Transaction: ${receipt.hash}`,
+        });
+      } else {
+        throw new Error("Transaction failed");
+      }
+      
+    } catch (error: any) {
+      console.error('Payment error:', error);
+      
+      let errorMessage = "Unable to process payment. Please try again.";
+      
+      if (error.code === 'ACTION_REJECTED') {
+        errorMessage = "Transaction was rejected by user.";
+      } else if (error.message.includes('insufficient funds')) {
+        errorMessage = "Insufficient funds for gas fees.";
+      } else if (error.message.includes('user rejected')) {
+        errorMessage = "Transaction was rejected by user.";
+      }
+      
       toast({
         title: "Payment failed",
-        description: "Unable to process payment. Please try again.",
+        description: errorMessage,
         variant: "destructive"
       });
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const increaseAmount = () => {
+    setPaymentAmount(prev => Math.min(prev + 1, 1000)); // Max $1000
+  };
+
+  const decreaseAmount = () => {
+    setPaymentAmount(prev => Math.max(prev - 1, 1)); // Min $1
+  };
+
+  const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value) || 1;
+    setPaymentAmount(Math.min(Math.max(value, 1), 1000));
   };
 
   const formatAddress = (address: string) => {
@@ -101,8 +185,7 @@ export function CryptoPayment() {
           </h1>
           
           <p className="text-muted-foreground leading-relaxed">
-            Pay in crypto for premium access to the resource. To access
-            this content, please pay $0.05 Base Sepolia USDC.
+            Pay in crypto for premium access to the resource. Select your payment amount below.
           </p>
           
           <p className="text-sm">
@@ -142,6 +225,63 @@ export function CryptoPayment() {
           </div>
         )}
 
+        {isConnected && (
+          <div className="space-y-4 animate-slide-down">
+            <div className="text-center">
+              <h3 className="text-sm font-medium text-muted-foreground mb-3">Payment Amount</h3>
+              
+              <div className="flex items-center justify-center gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={decreaseAmount}
+                  disabled={paymentAmount <= 1}
+                  className="h-8 w-8 p-0 rounded-full"
+                >
+                  <Minus size={12} />
+                </Button>
+                
+                <div className="flex items-center gap-2">
+                  <span className="text-lg font-bold">$</span>
+                  <Input
+                    type="number"
+                    value={paymentAmount}
+                    onChange={handleAmountChange}
+                    min="1"
+                    max="1000"
+                    className="w-20 text-center text-lg font-bold"
+                  />
+                  <span className="text-sm text-muted-foreground">USDC</span>
+                </div>
+                
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={increaseAmount}
+                  disabled={paymentAmount >= 1000}
+                  className="h-8 w-8 p-0 rounded-full"
+                >
+                  <Plus size={12} />
+                </Button>
+              </div>
+              
+              <div className="flex justify-center gap-2 mt-3">
+                {[1, 5, 10, 25].map((amount) => (
+                  <Button
+                    key={amount}
+                    variant={paymentAmount === amount ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setPaymentAmount(amount)}
+                    className="text-xs px-3 h-7"
+                  >
+                    ${amount}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="pt-4">
           {!isConnected ? (
             <Button
@@ -164,7 +304,7 @@ export function CryptoPayment() {
                   Processing...
                 </div>
               ) : (
-                "Pay Now"
+                `Pay $${paymentAmount} USDC`
               )}
             </Button>
           )}
